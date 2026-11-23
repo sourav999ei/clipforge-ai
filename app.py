@@ -1,151 +1,213 @@
-import os, re, uuid, shutil, subprocess
-from pathlib import Path
-from typing import Optional
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-from fastapi.middleware.cors import CORSMiddleware
 
-BASE = Path(__file__).resolve().parent
+import os
+import uuid
+import subprocess
+from pathlib import Path
+from urllib.parse import urlparse
+
+import yt_dlp
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from faster_whisper import WhisperModel
+
+app = FastAPI(title="ClipForge AI")
+
+BASE = Path(__file__).parent
 UPLOADS = BASE / "uploads"
 OUTPUTS = BASE / "outputs"
-UPLOADS.mkdir(exist_ok=True)
-OUTPUTS.mkdir(exist_ok=True)
+STATIC = BASE / "static"
 
-app = FastAPI(title="ClipForge AI", version="0.1.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
+for folder in [UPLOADS, OUTPUTS]:
+    folder.mkdir(exist_ok=True)
 
-ALLOWED = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
+app.mount("/outputs", StaticFiles(directory=str(OUTPUTS)), name="outputs")
+app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
+
 jobs = {}
 
-def run(cmd):
-    p = subprocess.run(cmd, capture_output=True, text=True)
-    if p.returncode != 0:
-        raise RuntimeError((p.stderr or p.stdout)[-2500:])
-    return p.stdout
-
-def duration_of(path):
-    out = run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
-               "-of", "default=noprint_wrappers=1:nokey=1", str(path)])
-    return float(out.strip())
-
-def transcribe(path):
-    try:
-        from faster_whisper import WhisperModel
-        model_name = os.getenv("WHISPER_MODEL", "small")
-        model = WhisperModel(model_name, device="cpu", compute_type="int8")
-        segments, info = model.transcribe(str(path), vad_filter=True, word_timestamps=False)
-        return [{"start": float(s.start), "end": float(s.end), "text": s.text.strip()} for s in segments]
-    except ImportError:
-        raise RuntimeError("AI transcription is not installed. Install faster-whisper (see README), or use demo mode.")
-    except Exception as e:
-        raise RuntimeError(f"Transcription failed: {e}")
-
-HOOKS = [
-    "but", "why", "how", "secret", "mistake", "never", "always", "best", "worst",
-    "crazy", "insane", "imagine", "actually", "truth", "important", "problem",
-    "because", "finally", "money", "win", "lose", "shocking", " कहानी", "लेकिन",
-    "क्यों", "कैसे", "सच", "गलती", "जिंदगी", "पैसा", "भाई", "देखो"
+ALLOWED_DOMAINS = [
+    "youtube.com", "youtu.be", "instagram.com",
+    "tiktok.com", "facebook.com", "fb.watch",
+    "twitter.com", "x.com", "vimeo.com"
 ]
 
-def pick_highlights(segments, total, max_clips=5, clip_len=35):
-    if not segments:
-        return []
-    candidates = []
-    for i, seg in enumerate(segments):
-        start = max(0, seg["start"] - 2.0)
-        end = min(total, max(seg["end"] + 8.0, start + 15.0))
-        # Extend around nearby speech, while respecting requested max duration.
-        end = min(end, start + clip_len)
-        text = seg["text"].lower()
-        score = min(len(text) / 90, 2.0) + sum(1.2 for h in HOOKS if h in text)
-        score += 0.4 if "?" in text or "!" in text else 0
-        if end - start >= 8:
-            candidates.append({"start": start, "end": end, "score": round(score, 2),
-                               "title": (seg["text"][:75] or "AI highlight").strip()})
-    candidates.sort(key=lambda x: x["score"], reverse=True)
-    chosen = []
-    for c in candidates:
-        if all(c["end"] <= x["start"] or c["start"] >= x["end"] for x in chosen):
-            chosen.append(c)
-        if len(chosen) >= max_clips:
-            break
-    return sorted(chosen, key=lambda x: x["start"])
+def valid_url(url):
+    try:
+        host = (urlparse(url).hostname or "").lower()
+        return any(
+            host == domain or host.endswith("." + domain)
+            for domain in ALLOWED_DOMAINS
+        )
+    except Exception:
+        return False
 
-def make_clip(source, item, output, vertical=True):
-    start, end = item["start"], item["end"]
-    if vertical:
-        vf = "scale=ih*9/16:ih:force_original_aspect_ratio=increase,crop=ih*9/16:ih,scale=1080:1920"
-    else:
-        vf = "scale=1920:-2"
-    run(["ffmpeg", "-y", "-ss", str(start), "-i", str(source), "-t", str(end-start),
-         "-vf", vf, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-         "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(output)])
 
 @app.get("/")
 def home():
-    return FileResponse(BASE / "static" / "index.html")
+    return FileResponse(STATIC / "index.html")
+
 
 @app.post("/api/upload")
 async def upload_video(file: UploadFile = File(...)):
-    ext = Path(file.filename or "").suffix.lower()
-    if ext not in ALLOWED:
-        raise HTTPException(400, "Please upload MP4, MOV, MKV, WebM or M4V.")
-    job_id = uuid.uuid4().hex[:12]
-    dest = UPLOADS / f"{job_id}{ext}"
+    if not file.filename:
+        raise HTTPException(400, "No file selected")
+
+    job_id = str(uuid.uuid4())
+    extension = Path(file.filename).suffix or ".mp4"
+    video_path = UPLOADS / f"{job_id}{extension}"
+
     size = 0
-    with dest.open("wb") as f:
-        while chunk := await file.read(1024 * 1024):
+    with open(video_path, "wb") as output:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
             size += len(chunk)
-            if size > 2 * 1024 * 1024 * 1024:
-                dest.unlink(missing_ok=True)
-                raise HTTPException(413, "Maximum upload size is 2 GB.")
-            f.write(chunk)
-    jobs[job_id] = {"status": "uploaded", "filename": file.filename, "path": str(dest), "clips": [], "error": None}
-    return {"job_id": job_id, "filename": file.filename, "size": size}
+            if size > 500 * 1024 * 1024:
+                video_path.unlink(missing_ok=True)
+                raise HTTPException(413, "Video must be under 500 MB")
+            output.write(chunk)
+
+    jobs[job_id] = str(video_path)
+    return {"job_id": job_id}
+
+
+class URLRequest(BaseModel):
+    url: str
+
+
+@app.post("/api/upload-url")
+def upload_url(data: URLRequest):
+    url = data.url.strip()
+
+    if not valid_url(url):
+        raise HTTPException(400, "This video platform URL is not supported")
+
+    job_id = str(uuid.uuid4())
+    video_path = UPLOADS / f"{job_id}.mp4"
+
+    options = {
+        "format": "best[height<=720][ext=mp4]/best[height<=720]/best",
+        "outtmpl": str(video_path),
+        "merge_output_format": "mp4",
+        "noplaylist": True,
+        "max_filesize": 500 * 1024 * 1024,
+        "socket_timeout": 30,
+        "retries": 2,
+        "quiet": True
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(options) as downloader:
+            downloader.download([url])
+
+        if not video_path.exists():
+            candidates = list(UPLOADS.glob(f"{job_id}.*"))
+            if not candidates:
+                raise Exception("Downloaded video not found")
+            video_path = candidates[0]
+
+        jobs[job_id] = str(video_path)
+        return {"job_id": job_id}
+
+    except Exception as error:
+        video_path.unlink(missing_ok=True)
+        raise HTTPException(400, f"Could not download video: {str(error)[:250]}")
+
 
 @app.post("/api/generate/{job_id}")
-def generate(job_id: str, max_clips: int = 5, clip_length: int = 35, vertical: bool = True):
-    job = jobs.get(job_id)
-    if not job:
-        raise HTTPException(404, "Upload not found. Upload the video again.")
-    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
-        raise HTTPException(500, "FFmpeg and FFprobe are required. See README.")
+def generate_clips(
+    job_id: str,
+    max_clips: int = 3,
+    clip_length: int = 30,
+    vertical: bool = True
+):
+    if job_id not in jobs:
+        raise HTTPException(404, "Video job not found")
+
+    video_path = Path(jobs[job_id])
+    if not video_path.exists():
+        raise HTTPException(404, "Video file not found")
+
     try:
-        job["status"] = "transcribing"
-        total = duration_of(job["path"])
-        segments = transcribe(job["path"])
-        highlights = pick_highlights(segments, total, max(1, min(max_clips, 10)), max(10, min(clip_length, 90)))
-        if not highlights:
-            raise RuntimeError("No suitable speech highlights found in this video.")
-        job["status"] = "rendering"
+        model = WhisperModel("tiny", device="cpu", compute_type="int8")
+        segments, info = model.transcribe(str(video_path), beam_size=1)
+
+        transcript = list(segments)
+        if not transcript:
+            raise Exception("No speech detected in video")
+
+        duration = max(float(s.end) for s in transcript)
+        candidates = []
+
+        for segment in transcript:
+            text = segment.text.strip()
+            if len(text.split()) >= 5:
+                score = len(text.split())
+                keywords = [
+                    "wow", "amazing", "crazy", "secret",
+                    "important", "love", "money", "why",
+                    "how", "best", "never", "mistake"
+                ]
+                score += sum(word in text.lower() for word in keywords) * 5
+                candidates.append((score, float(segment.start), text))
+
+        candidates.sort(reverse=True)
+
         clips = []
-        for idx, item in enumerate(highlights, 1):
-            name = f"{job_id}_clip_{idx}.mp4"
-            output = OUTPUTS / name
-            make_clip(job["path"], item, output, vertical)
-            clips.append({"name": name, "title": item["title"], "start": round(item["start"],1),
-                          "end": round(item["end"],1), "score": item["score"],
-                          "url": f"/api/download/{name}"})
-        job["clips"] = clips
-        job["status"] = "done"
-        return {"job_id": job_id, "status": "done", "clips": clips}
-    except Exception as e:
-        job["status"] = "error"
-        job["error"] = str(e)
-        raise HTTPException(500, str(e))
+        used_times = []
 
-@app.get("/api/download/{name}")
-def download(name: str):
-    # Restrict paths to generated mp4 files.
-    if Path(name).name != name or not name.endswith(".mp4"):
-        raise HTTPException(400, "Invalid filename.")
-    path = OUTPUTS / name
-    if not path.exists():
-        raise HTTPException(404, "Clip not found.")
-    return FileResponse(path, media_type="video/mp4", filename=name)
+        for score, start, text in candidates:
+            if len(clips) >= max(1, min(max_clips, 10)):
+                break
 
-@app.get("/api/health")
-def health():
-    return {"ok": True, "ffmpeg": shutil.which("ffmpeg") is not None}
+            if any(abs(start - old) < clip_length for old in used_times):
+                continue
+
+            end = min(start + clip_length, duration)
+            if end - start < 5:
+                continue
+
+            clip_id = str(uuid.uuid4())[:8]
+            output_path = OUTPUTS / f"{clip_id}.mp4"
+
+            command = ["ffmpeg", "-y", "-ss", str(start),
+                       "-i", str(video_path), "-t", str(end - start)]
+
+            if vertical:
+                command += [
+                    "-vf",
+                    "scale=1080:1920:force_original_aspect_ratio=increase,"
+                    "crop=1080:1920"
+                ]
+
+            command += [
+                "-c:v", "libx264", "-preset", "ultrafast",
+                "-c:a", "aac", "-movflags", "+faststart",
+                str(output_path)
+            ]
+
+            subprocess.run(
+                command, check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE
+            )
+
+            clips.append({
+                "title": text[:70] or "AI Highlight",
+                "start": round(start, 1),
+                "end": round(end, 1),
+                "url": f"/outputs/{clip_id}.mp4"
+            })
+            used_times.append(start)
+
+        if not clips:
+            raise Exception("Could not find suitable clips")
+
+        return {"clips": clips}
+
+    except Exception as error:
+        raise HTTPException(500, detail=str(error)[:300])
+        

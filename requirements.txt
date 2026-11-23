@@ -1,4 +1,7 @@
-fastapi>=0.110
-uvicorn[standard]>=0.27
-python-multipart>=0.0.9
-faster-whisper>=1.0.0
+
+fastapi
+uvicorn[standard]
+python-multipart
+faster-whisper
+yt-dlp
+

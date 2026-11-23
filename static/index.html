@@ -4,97 +4,234 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ClipForge AI - Viral Video Clips</title>
+<title>ClipForge AI - Video Clipper</title>
 <style>
 *{box-sizing:border-box}
-body{margin:0;background:#09090f;color:#fff;font-family:Arial,sans-serif}
-header{padding:22px 7%;border-bottom:1px solid #292538;display:flex;justify-content:space-between;align-items:center}
-.logo{font-size:23px;font-weight:800;color:#c4a5ff}
-main{max-width:850px;margin:65px auto;padding:20px}
-h1{font-size:48px;text-align:center;line-height:1.15}
-h1 span{color:#b68aff}
-p{text-align:center;color:#aaa;line-height:1.7}
-.upload{margin:35px 0;padding:45px 15px;border:2px dashed #7252a9;border-radius:18px;text-align:center;background:#15121f}
-button{background:linear-gradient(90deg,#8055ee,#c04be8);border:0;border-radius:9px;padding:14px 24px;color:white;font-weight:bold;cursor:pointer}
-input,select{background:#201d2b;color:white;border:1px solid #51436b;padding:12px;border-radius:8px;margin:8px}
-.controls{text-align:center}
-#status{color:#c5a5ff;margin:20px}
-#results{display:grid;gap:12px;margin-top:20px}
-.clip{padding:18px;background:#191623;border-radius:12px}
-a{color:#c9aaff}
-@media(max-width:600px){h1{font-size:35px}main{margin:35px auto}}
+body{
+ margin:0;background:#090d18;color:#fff;
+ font-family:Arial,sans-serif;padding:20px;
+}
+.container{max-width:750px;margin:30px auto}
+header{text-align:center;margin-bottom:30px}
+.logo{font-size:32px;font-weight:900;color:#8b7cff}
+header p{color:#aab1c5}
+.card{
+ background:#141b2d;border:1px solid #29334d;
+ border-radius:18px;padding:22px;margin-bottom:18px
+}
+h2{font-size:19px;margin-top:0}
+input[type="text"],input[type="number"]{
+ width:100%;padding:15px;border-radius:10px;
+ border:1px solid #38435e;background:#0b1222;
+ color:white;font-size:15px;margin:10px 0
+}
+button{
+ width:100%;padding:15px;border:0;border-radius:10px;
+ background:#7865ff;color:white;font-size:16px;
+ font-weight:bold;cursor:pointer;margin-top:12px
+}
+button:disabled{opacity:.5}
+.upload{
+ display:block;text-align:center;padding:24px;
+ border:2px dashed #566184;border-radius:12px;
+ color:#c4c9dc;cursor:pointer
+}
+.upload input{display:none}
+.or{text-align:center;color:#8790aa;margin:16px}
+.options{display:flex;gap:15px;flex-wrap:wrap;margin-top:15px}
+.options label{color:#cbd1e3}
+.status{color:#a99cff;text-align:center;margin:18px 0}
+.clip{
+ background:#202a42;padding:15px;border-radius:12px;
+ margin-top:12px
+}
+.clip a{color:#a99cff}
+small{color:#8e9bb6}
 </style>
 </head>
 <body>
-<header><div class="logo">✂ CLIPFORGE AI</div><span>AI VIDEO STUDIO</span></header>
-<main>
-<h1>Turn Long Videos Into <span>Viral Clips.</span></h1>
-<p>Upload your video. Let AI discover interesting moments and create short videos for Reels and Shorts.</p>
-<div class="upload">
-<h2>⬆ Upload Your Video</h2>
-<p>Choose MP4, MOV, MKV or WebM</p>
-<input type="file" id="video" accept="video/*">
+<div class="container">
+
+<header>
+ <div class="logo">⚡ ClipForge AI</div>
+ <p>Turn long videos into viral short clips with AI</p>
+</header>
+
+<div class="card">
+ <h2>🎬 Add Your Video</h2>
+
+ <input id="videoUrl" type="text"
+ placeholder="Paste YouTube, Instagram, TikTok video URL">
+
+ <button onclick="useUrl()">Import Video URL</button>
+
+ <div class="or">— OR —</div>
+
+ <label class="upload">
+  📁 Choose Video File
+  <input id="videoFile" type="file" accept="video/*">
+  <p id="fileName"><small>Tap to select a video from your device</small></p>
+ </label>
 </div>
-<div class="controls">
-<select id="count">
-<option value="3">3 Clips</option>
-<option value="5" selected>5 Clips</option>
-<option value="7">7 Clips</option>
-</select>
-<select id="length">
-<option value="20">20 Seconds</option>
-<option value="35" selected>35 Seconds</option>
-<option value="60">60 Seconds</option>
-</select>
-<br><br>
-<button id="generate">✦ Generate AI Clips</button>
-<div id="status"></div>
+
+<div class="card">
+ <h2>⚙️ Clip Settings</h2>
+
+ <label>Number of clips</label>
+ <input id="clipCount" type="number" value="3" min="1" max="10">
+
+ <label>Clip length (seconds)</label>
+ <input id="clipLength" type="number" value="30" min="5" max="180">
+
+ <div class="options">
+  <label><input id="vertical" type="checkbox" checked> Vertical 9:16 format</label>
+ </div>
+
+ <button id="generateBtn" onclick="generateClips()">
+  ✂️ Generate AI Clips
+ </button>
+
+ <div id="status" class="status"></div>
 </div>
-<div id="results"></div>
-</main>
+
+<div class="card" id="results" style="display:none">
+ <h2>🚀 Your AI Clips</h2>
+ <div id="clipList"></div>
+</div>
+
+</div>
+
 <script>
-const btn=document.getElementById('generate');
-btn.onclick=async()=>{
- const file=document.getElementById('video').files[0];
- const status=document.getElementById('status');
- const results=document.getElementById('results');
- if(!file){status.textContent='Please select a video first.';return}
- btn.disabled=true;
- results.innerHTML='';
+let currentJobId = null;
+
+const statusBox = document.getElementById("status");
+const generateBtn = document.getElementById("generateBtn");
+
+document.getElementById("videoFile").addEventListener("change", function(){
+ const file = this.files[0];
+ document.getElementById("fileName").textContent =
+ file ? file.name : "No file selected";
+ document.getElementById("videoUrl").value = "";
+ currentJobId = null;
+});
+
+async function useUrl(){
+ const url = document.getElementById("videoUrl").value.trim();
+
+ if(!url){
+  alert("Please paste a video URL");
+  return;
+ }
+
+ if(!/^https?:\/\//i.test(url)){
+  alert("Please enter a valid video URL");
+  return;
+ }
+
  try{
- status.textContent='Uploading video...';
- const form=new FormData();
- form.append('file',file);
- const upload=await fetch('/api/upload',{method:'POST',body:form});
- const data=await upload.json();
- if(!upload.ok)throw Error(data.detail||'Upload failed');
- status.textContent='AI is finding highlights. Please wait...';
- const params=new URLSearchParams({
- max_clips:document.getElementById('count').value,
- clip_length:document.getElementById('length').value,
- vertical:'true'
- });
- const response=await fetch('/api/generate/'+data.job_id+'?'+params,{method:'POST'});
- const output=await response.json();
- if(!response.ok)throw Error(output.detail||'Generation failed');
- output.clips.forEach((clip,i)=>{
- const div=document.createElement('div');
- div.className='clip';
- const title=document.createElement('h3');
- title.textContent='Clip '+(i+1)+': '+clip.title;
- const info=document.createElement('p');
- info.textContent=clip.start+'s - '+clip.end+'s';
- const link=document.createElement('a');
- link.href=clip.url;
- link.textContent='Download MP4';
- div.append(title,info,link);
- results.append(div);
- });
- status.textContent='✓ Your AI clips are ready!';
+  statusBox.textContent = "⏳ Importing video URL...";
+  generateBtn.disabled = true;
+
+  const response = await fetch("/api/upload-url",{
+   method:"POST",
+   headers:{"Content-Type":"application/json"},
+   body:JSON.stringify({url:url})
+  });
+
+  const data = await response.json();
+
+  if(!response.ok) throw new Error(data.detail || "URL import failed");
+
+  currentJobId = data.job_id;
+  document.getElementById("videoFile").value = "";
+  document.getElementById("fileName").textContent = "URL video imported successfully";
+  statusBox.textContent = "✅ Video imported! Now generate your clips.";
+
  }catch(error){
- status.textContent='Error: '+error.message;
- }finally{btn.disabled=false}
-};
+  statusBox.textContent = "❌ " + error.message;
+ }finally{
+  generateBtn.disabled = false;
+ }
+}
+
+async function generateClips(){
+ try{
+  if(!currentJobId){
+   const file = document.getElementById("videoFile").files[0];
+
+   if(!file){
+    alert("Please paste a URL or choose a video file first");
+    return;
+   }
+
+   statusBox.textContent = "⏳ Uploading your video...";
+   generateBtn.disabled = true;
+
+   const formData = new FormData();
+   formData.append("file",file);
+
+   const uploadResponse = await fetch("/api/upload",{
+    method:"POST",body:formData
+   });
+
+   const uploadData = await uploadResponse.json();
+
+   if(!uploadResponse.ok)
+    throw new Error(uploadData.detail || "Upload failed");
+
+   currentJobId = uploadData.job_id;
+  }
+
+  statusBox.textContent = "🤖 AI is finding the best moments...";
+  generateBtn.disabled = true;
+
+  const count = document.getElementById("clipCount").value;
+  const length = document.getElementById("clipLength").value;
+  const vertical = document.getElementById("vertical").checked;
+
+  const response = await fetch(
+   `/api/generate/${currentJobId}?max_clips=${count}&clip_length=${length}&vertical=${vertical}`,
+   {method:"POST"}
+  );
+
+  const data = await response.json();
+
+  if(!response.ok) throw new Error(data.detail || "Clip generation failed");
+
+  const list = document.getElementById("clipList");
+  list.innerHTML = "";
+
+  data.clips.forEach((clip,index)=>{
+   const item = document.createElement("div");
+   item.className = "clip";
+
+   const title = document.createElement("h3");
+   title.textContent = "Clip " + (index+1) + ": " + clip.title;
+
+   const video = document.createElement("video");
+   video.src = clip.url;
+   video.controls = true;
+   video.playsInline = true;
+   video.style.width = "100%";
+
+   const download = document.createElement("a");
+   download.href = clip.url;
+   download.download = "ClipForge-" + (index+1) + ".mp4";
+   download.textContent = "⬇ Download Clip";
+
+   item.append(title,video,document.createElement("br"),download);
+   list.appendChild(item);
+  });
+
+  document.getElementById("results").style.display = "block";
+  statusBox.textContent = "✅ Your clips are ready!";
+
+ }catch(error){
+  statusBox.textContent = "❌ " + error.message;
+ }finally{
+  generateBtn.disabled = false;
+ }
+}
 </script>
 </body>
 </html>

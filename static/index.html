@@ -1,0 +1,100 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClipForge AI - Viral Video Clips</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#09090f;color:#fff;font-family:Arial,sans-serif}
+header{padding:22px 7%;border-bottom:1px solid #292538;display:flex;justify-content:space-between;align-items:center}
+.logo{font-size:23px;font-weight:800;color:#c4a5ff}
+main{max-width:850px;margin:65px auto;padding:20px}
+h1{font-size:48px;text-align:center;line-height:1.15}
+h1 span{color:#b68aff}
+p{text-align:center;color:#aaa;line-height:1.7}
+.upload{margin:35px 0;padding:45px 15px;border:2px dashed #7252a9;border-radius:18px;text-align:center;background:#15121f}
+button{background:linear-gradient(90deg,#8055ee,#c04be8);border:0;border-radius:9px;padding:14px 24px;color:white;font-weight:bold;cursor:pointer}
+input,select{background:#201d2b;color:white;border:1px solid #51436b;padding:12px;border-radius:8px;margin:8px}
+.controls{text-align:center}
+#status{color:#c5a5ff;margin:20px}
+#results{display:grid;gap:12px;margin-top:20px}
+.clip{padding:18px;background:#191623;border-radius:12px}
+a{color:#c9aaff}
+@media(max-width:600px){h1{font-size:35px}main{margin:35px auto}}
+</style>
+</head>
+<body>
+<header><div class="logo">✂ CLIPFORGE AI</div><span>AI VIDEO STUDIO</span></header>
+<main>
+<h1>Turn Long Videos Into <span>Viral Clips.</span></h1>
+<p>Upload your video. Let AI discover interesting moments and create short videos for Reels and Shorts.</p>
+<div class="upload">
+<h2>⬆ Upload Your Video</h2>
+<p>Choose MP4, MOV, MKV or WebM</p>
+<input type="file" id="video" accept="video/*">
+</div>
+<div class="controls">
+<select id="count">
+<option value="3">3 Clips</option>
+<option value="5" selected>5 Clips</option>
+<option value="7">7 Clips</option>
+</select>
+<select id="length">
+<option value="20">20 Seconds</option>
+<option value="35" selected>35 Seconds</option>
+<option value="60">60 Seconds</option>
+</select>
+<br><br>
+<button id="generate">✦ Generate AI Clips</button>
+<div id="status"></div>
+</div>
+<div id="results"></div>
+</main>
+<script>
+const btn=document.getElementById('generate');
+btn.onclick=async()=>{
+ const file=document.getElementById('video').files[0];
+ const status=document.getElementById('status');
+ const results=document.getElementById('results');
+ if(!file){status.textContent='Please select a video first.';return}
+ btn.disabled=true;
+ results.innerHTML='';
+ try{
+ status.textContent='Uploading video...';
+ const form=new FormData();
+ form.append('file',file);
+ const upload=await fetch('/api/upload',{method:'POST',body:form});
+ const data=await upload.json();
+ if(!upload.ok)throw Error(data.detail||'Upload failed');
+ status.textContent='AI is finding highlights. Please wait...';
+ const params=new URLSearchParams({
+ max_clips:document.getElementById('count').value,
+ clip_length:document.getElementById('length').value,
+ vertical:'true'
+ });
+ const response=await fetch('/api/generate/'+data.job_id+'?'+params,{method:'POST'});
+ const output=await response.json();
+ if(!response.ok)throw Error(output.detail||'Generation failed');
+ output.clips.forEach((clip,i)=>{
+ const div=document.createElement('div');
+ div.className='clip';
+ const title=document.createElement('h3');
+ title.textContent='Clip '+(i+1)+': '+clip.title;
+ const info=document.createElement('p');
+ info.textContent=clip.start+'s - '+clip.end+'s';
+ const link=document.createElement('a');
+ link.href=clip.url;
+ link.textContent='Download MP4';
+ div.append(title,info,link);
+ results.append(div);
+ });
+ status.textContent='✓ Your AI clips are ready!';
+ }catch(error){
+ status.textContent='Error: '+error.message;
+ }finally{btn.disabled=false}
+};
+</script>
+</body>
+</html>
